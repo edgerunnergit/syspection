@@ -14,7 +14,7 @@ use syspection_common::{ExecveCalls, ARG_COUNT, ARG_SIZE};
 use core::mem;
 use network_types::{
     eth::{EthHdr, EtherType},
-    ip::Ipv4Hdr,
+    ip::{Ipv4Hdr, IpProto}, udp::UdpHdr, tcp::TcpHdr,
 };
 
 #[map(name = "EXECVE_EVENTS")]
@@ -104,8 +104,22 @@ fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
     let source_ip = source.to_le_bytes();
     let destination_ip = destination.to_le_bytes();
 
+    let source_port = match unsafe { (*ipv4hdr).proto } {
+        IpProto::Tcp => {
+            let tcphdr: *const TcpHdr =
+                unsafe { ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)? };
+                u16::from_be(unsafe { (*tcphdr).source })
+            }
+            IpProto::Udp => {
+                let udphdr: *const UdpHdr =
+                unsafe { ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)? };
+            u16::from_be(unsafe { (*udphdr).source })
+        }
+        _ => return Err(()),
+    };
+
     info!(
-        &ctx, "SRC: {}.{}.{}.{} DST: {}.{}.{}.{}", source_ip[0], source_ip[1], source_ip[2], source_ip[3], destination_ip[0], destination_ip[1], destination_ip[2], destination_ip[3]
+        &ctx, "SRC: {}.{}.{}.{} SRC_Port: {} DST: {}.{}.{}.{}", source_ip[0], source_ip[1], source_ip[2], source_ip[3], source_port, destination_ip[0], destination_ip[1], destination_ip[2], destination_ip[3]
     );
 
     Ok(xdp_action::XDP_PASS)
