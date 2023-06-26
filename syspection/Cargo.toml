@@ -11,8 +11,9 @@ syspection-common = { path = "../syspection-common", features = ["user"] }
 anyhow = "1"
 env_logger = "0.10"
 log = "0.4"
-tokio = { version = "1.25", features = ["macros", "rt", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1.25", features = ["macros", "rt", "rt-multi-thread", "net", "signal", "full"] }
 clap = "4.3.8"
+serde = { version = "1.0.164", features = ["serde_derive"] }
 
 [[bin]]
 name = "syspection"

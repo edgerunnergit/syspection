@@ -4,16 +4,21 @@
 use aya_bpf::{
     helpers::*,
     bindings::*,
-    macros::{tracepoint, xdp}, 
+    maps::PerfEventArray,
+    macros::{map, tracepoint, xdp}, 
     programs::{TracePointContext, XdpContext},
 };
 use aya_log_ebpf::info;
+use syspection_common::{ExecveCalls, ARG_COUNT, ARG_SIZE};
 
 use core::mem;
 use network_types::{
     eth::{EthHdr, EtherType},
     ip::Ipv4Hdr,
 };
+
+#[map(name = "EXECVE_EVENTS")]
+static mut EXECVE_EVENTS: PerfEventArray<ExecveCalls> = PerfEventArray::<ExecveCalls>::with_max_entries(1024, 0);
 
 #[xdp(name = "ip_scanner")]
 pub fn xdp_firewall(ctx: XdpContext) -> u32 {
@@ -48,7 +53,7 @@ unsafe fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
 unsafe fn try_syspection(ctx: &TracePointContext) -> Result<i32, i64> {
 
     // Get the process that is executing the command
-    let mut exec_buf = [0u8; 16];
+    let mut exec_buf = [0u8; 32];
     let exec = bpf_get_current_comm().unwrap_or_default();
 
     // Get the command that is being executed and stores it in exec_comm
@@ -56,12 +61,12 @@ unsafe fn try_syspection(ctx: &TracePointContext) -> Result<i32, i64> {
     _ = bpf_probe_read_user_str_bytes(exec_comm, &mut exec_buf);
 
     // Create a buffer for the arguments of the command
-    let mut arg_buf = [[0u8; 32]; 10];
+    let mut arg_buf = [[0u8; ARG_SIZE]; ARG_COUNT];
     
     // Get the arguments of the command
     let argv = ctx.read_at::<*const *const u8>(24)?;
-    for i in 0..10 {
-        let arg_ptr = bpf_probe_read_user(argv.offset(i))?;
+    for i in 0..ARG_COUNT {
+        let arg_ptr = bpf_probe_read_user(argv.offset(i as isize))?;
 
         if arg_ptr.is_null() {
             break;
@@ -70,8 +75,16 @@ unsafe fn try_syspection(ctx: &TracePointContext) -> Result<i32, i64> {
         bpf_probe_read_user_str_bytes(arg_ptr, &mut arg_buf[i as usize]).unwrap_or_default();
     }
 
+    // bpf_printk!(b"exec: %s: %s %s %s %s", exec.as_ptr(), exec_comm, arg_buf[1].as_ptr(), arg_buf[2].as_ptr(), arg_buf[3].as_ptr());
 
-    bpf_printk!(b"exec: %s: %s %s %s %s", exec.as_ptr(), exec_comm, arg_buf[1].as_ptr(), arg_buf[2].as_ptr(), arg_buf[3].as_ptr());
+    let execve_calls = ExecveCalls {
+        caller: exec,
+        command: exec_buf,
+        args: arg_buf,
+    };
+
+    EXECVE_EVENTS.output(ctx, &execve_calls, 0);
+
     Ok(0)
 }
 
