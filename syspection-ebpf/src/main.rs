@@ -95,7 +95,7 @@ fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
         &ctx, "SRC: {}.{}.{}.{} DST: {}.{}.{}.{}", source_ip[0], source_ip[1], source_ip[2], source_ip[3], destination_ip[0], destination_ip[1], destination_ip[2], destination_ip[3]
     );
 
-    Ok(0)
+    Ok(xdp_action::XDP_PASS)
 }
 
 #[panic_handler]
