@@ -104,22 +104,23 @@ fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
     let source_ip = source.to_le_bytes();
     let destination_ip = destination.to_le_bytes();
 
-    let source_port = match unsafe { (*ipv4hdr).proto } {
+    let (source_port, dest_port) = match unsafe { (*ipv4hdr).proto } {
         IpProto::Tcp => {
             let tcphdr: *const TcpHdr =
                 unsafe { ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)? };
-                u16::from_be(unsafe { (*tcphdr).source })
+                (u16::from_be(unsafe { (*tcphdr).source }), u16::from_be(unsafe { (*tcphdr).dest }))
             }
             IpProto::Udp => {
                 let udphdr: *const UdpHdr =
                 unsafe { ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)? };
-            u16::from_be(unsafe { (*udphdr).source })
+                (u16::from_be(unsafe { (*udphdr).source }), u16::from_be(unsafe { (*udphdr).dest }))
+                // u16::from_be(unsafe { (*udphdr).source })
         }
         _ => return Err(()),
     };
 
     info!(
-        &ctx, "SRC: {}.{}.{}.{} SRC_Port: {} DST: {}.{}.{}.{}", source_ip[0], source_ip[1], source_ip[2], source_ip[3], source_port, destination_ip[0], destination_ip[1], destination_ip[2], destination_ip[3]
+        &ctx, "SRC: {}.{}.{}.{} SRC_Port: {} DST: {}.{}.{}.{} DST_Port: {}", source_ip[0], source_ip[1], source_ip[2], source_ip[3], source_port, destination_ip[0], destination_ip[1], destination_ip[2], destination_ip[3], dest_port
     );
 
     Ok(xdp_action::XDP_PASS)
