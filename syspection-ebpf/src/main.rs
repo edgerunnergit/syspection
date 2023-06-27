@@ -11,7 +11,9 @@ use aya_bpf::{
 use aya_log_ebpf::info;
 use syspection_common::{ExecveCalls, IpRecord, ARG_COUNT, ARG_SIZE};
 
-use core::mem;
+use core::{mem,
+    str::from_utf8_unchecked};
+
 use network_types::{
     eth::{EthHdr, EtherType},
     ip::{Ipv4Hdr, IpProto}, udp::UdpHdr, tcp::TcpHdr,
@@ -56,7 +58,7 @@ unsafe fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
 unsafe fn try_syspection(ctx: &TracePointContext) -> Result<i32, i64> {
 
     // Get the process that is executing the command
-    let mut exec_buf = [0u8; 32];
+    let mut exec_buf = [0u8; 42];
     let exec = bpf_get_current_comm().unwrap_or_default();
 
     // Get the command that is being executed and stores it in exec_comm
@@ -78,8 +80,6 @@ unsafe fn try_syspection(ctx: &TracePointContext) -> Result<i32, i64> {
         bpf_probe_read_user_str_bytes(arg_ptr, &mut arg_buf[i as usize]).unwrap_or_default();
     }
 
-    // bpf_printk!(b"exec: %s: %s %s %s %s", exec.as_ptr(), exec_comm, arg_buf[1].as_ptr(), arg_buf[2].as_ptr(), arg_buf[3].as_ptr());
-
     let execve_calls = ExecveCalls {
         caller: exec,
         command: exec_buf,
@@ -87,6 +87,10 @@ unsafe fn try_syspection(ctx: &TracePointContext) -> Result<i32, i64> {
     };
 
     EXECVE_EVENTS.output(ctx, &execve_calls, 0);
+
+    info!(
+        ctx, "curr_comm: {}, exec_comm: {}", from_utf8_unchecked(&execve_calls.caller), from_utf8_unchecked(&execve_calls.command)
+    );
 
     Ok(0)
 }
@@ -101,11 +105,8 @@ fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
 
     let ipv4hdr: *const Ipv4Hdr = unsafe { ptr_at(&ctx, EthHdr::LEN)? };
 
-    let source = unsafe { (*ipv4hdr).src_addr };
-    let destination = unsafe { (*ipv4hdr).dst_addr };
-
-    let source_ip = source.to_le_bytes();
-    let destination_ip = destination.to_le_bytes();
+    let source = u32::from_be(unsafe { (*ipv4hdr).src_addr });
+    let destination = u32::from_be(unsafe { (*ipv4hdr).dst_addr });
 
     let (source_port, dest_port) = match unsafe { (*ipv4hdr).proto } {
         IpProto::Tcp => {
@@ -123,14 +124,14 @@ fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
     };
 
     let ip_record = IpRecord {
-        src_ip: source_ip,
+        src_ip: source,
         dst_port: dest_port,
     };
 
     unsafe { IP_RECORDS.output(&ctx, &ip_record, 0) };
 
     info!(
-        &ctx, "SRC: {}.{}.{}.{} SRC_Port: {} DST: {}.{}.{}.{} DST_Port: {}", source_ip[0], source_ip[1], source_ip[2], source_ip[3], source_port, destination_ip[0], destination_ip[1], destination_ip[2], destination_ip[3], dest_port
+        &ctx, "SRC: {:i} SRC_Port: {} DST: {:i} DST_Port: {}", source, source_port, destination, dest_port
     );
 
     Ok(xdp_action::XDP_PASS)
