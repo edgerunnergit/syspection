@@ -44,12 +44,13 @@ async fn main() -> Result<(), anyhow::Error> {
     let execve_trace: &mut TracePoint = bpf.program_mut("syspection").unwrap().try_into()?;
     execve_trace.load()?;
     execve_trace.attach("syscalls", "sys_enter_execve")?;
-    let mut _execve_events = AsyncPerfEventArray::try_from(bpf.map_mut("EXECVE_EVENTS").unwrap())?;
+    let mut _execve_events = AsyncPerfEventArray::try_from(bpf.take_map("EXECVE_EVENTS").unwrap())?;
 
     let ingress_ip: &mut Xdp = bpf.program_mut("ip_scanner").unwrap().try_into()?;
     ingress_ip.load()?;
     ingress_ip.attach(&opt.iface, XdpFlags::default())
         .context("failed to attach the XDP program with default flags - try changing XdpFlags::default() to XdpFlags::SKB_MODE")?;
+    let mut _ip_records = AsyncPerfEventArray::try_from(bpf.take_map("IP_RECORDS").unwrap())?;
 
     info!("Waiting for Ctrl-C...");
     signal::ctrl_c().await?;

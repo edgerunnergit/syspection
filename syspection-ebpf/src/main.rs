@@ -9,7 +9,7 @@ use aya_bpf::{
     programs::{TracePointContext, XdpContext},
 };
 use aya_log_ebpf::info;
-use syspection_common::{ExecveCalls, ARG_COUNT, ARG_SIZE};
+use syspection_common::{ExecveCalls, IpRecord, ARG_COUNT, ARG_SIZE};
 
 use core::mem;
 use network_types::{
@@ -19,6 +19,9 @@ use network_types::{
 
 #[map(name = "EXECVE_EVENTS")]
 static mut EXECVE_EVENTS: PerfEventArray<ExecveCalls> = PerfEventArray::<ExecveCalls>::with_max_entries(1024, 0);
+
+#[map(name = "IP_RECORDS")]
+static mut IP_RECORDS: PerfEventArray<IpRecord> = PerfEventArray::<IpRecord>::with_max_entries(1024, 0);
 
 #[xdp(name = "ip_scanner")]
 pub fn xdp_firewall(ctx: XdpContext) -> u32 {
@@ -118,6 +121,13 @@ fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
         }
         _ => return Err(()),
     };
+
+    let ip_record = IpRecord {
+        src_ip: source_ip,
+        dst_port: dest_port,
+    };
+
+    unsafe { IP_RECORDS.output(&ctx, &ip_record, 0) };
 
     info!(
         &ctx, "SRC: {}.{}.{}.{} SRC_Port: {} DST: {}.{}.{}.{} DST_Port: {}", source_ip[0], source_ip[1], source_ip[2], source_ip[3], source_port, destination_ip[0], destination_ip[1], destination_ip[2], destination_ip[3], dest_port
