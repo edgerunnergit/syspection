@@ -10,6 +10,8 @@ pub struct IpRecord {
     pub dst_port: u16,
 }
 
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for IpRecord {}
 
 #[repr(C)]
 #[derive(Copy, Clone)]
