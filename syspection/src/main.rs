@@ -1,13 +1,20 @@
 use aya::maps::AsyncPerfEventArray;
 use aya::programs::{TracePoint, Xdp, XdpFlags};
+use aya::util::online_cpus;
 use aya::{include_bytes_aligned, Bpf};
 use aya_log::BpfLogger;
 
-use clap::Parser;
+use syspection_common::{ExecveCalls, IpRecord, ARG_COUNT, ARG_SIZE};
+
+use std::ffi::CStr;
+use std::net::Ipv4Addr;
+
 use anyhow::Context;
-use serde::Serialize;
+use bytes::BytesMut;
+use clap::Parser;
 use log::{info, warn};
-use tokio::signal;
+use serde::Serialize;
+use tokio::{signal, task};
 
 #[derive(Debug, Parser)]
 struct Opt {
@@ -20,6 +27,33 @@ struct Execve {
     exec: String,
     exec_comm: String,
     args: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct IngressIp {
+    src_ip: Ipv4Addr,
+    dst_port: u16,
+}
+
+macro_rules! cstr_to_rstr {
+    ($var: expr) => {
+        CStr::from_bytes_until_nul(&$var[..])
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+    };
+}
+
+fn get_args(args: &[[u8; ARG_SIZE]; ARG_COUNT]) -> Vec<String> {
+    let mut args_vec = Vec::new();
+    for arg in args.iter() {
+        let arg_str = cstr_to_rstr!(arg);
+        if arg_str.is_empty() {
+            break;
+        }
+        args_vec.push(arg_str);
+    }
+    args_vec
 }
 
 #[tokio::main]
@@ -44,13 +78,60 @@ async fn main() -> Result<(), anyhow::Error> {
     let execve_trace: &mut TracePoint = bpf.program_mut("syspection").unwrap().try_into()?;
     execve_trace.load()?;
     execve_trace.attach("syscalls", "sys_enter_execve")?;
-    let mut _execve_events = AsyncPerfEventArray::try_from(bpf.take_map("EXECVE_EVENTS").unwrap())?;
+    let mut execve_events = AsyncPerfEventArray::try_from(bpf.take_map("EXECVE_EVENTS").unwrap())?;
 
     let ingress_ip: &mut Xdp = bpf.program_mut("ip_scanner").unwrap().try_into()?;
     ingress_ip.load()?;
     ingress_ip.attach(&opt.iface, XdpFlags::default())
         .context("failed to attach the XDP program with default flags - try changing XdpFlags::default() to XdpFlags::SKB_MODE")?;
-    let mut _ip_records = AsyncPerfEventArray::try_from(bpf.take_map("IP_RECORDS").unwrap())?;
+    let mut ip_records = AsyncPerfEventArray::try_from(bpf.take_map("IP_RECORDS").unwrap())?;
+
+    let cpus = online_cpus()?;
+    let num_cpus = cpus.len();
+    for cpu in cpus {
+        let mut ip_buf = ip_records.open(cpu, None)?;
+        let mut execve_buf = execve_events.open(cpu, None)?;
+
+        task::spawn(async move {
+            let mut ip_buffers = (0..num_cpus)
+                .map(|_| BytesMut::with_capacity(1000))
+                .collect::<Vec<_>>();
+
+            loop {
+                let records = ip_buf.read_events(&mut ip_buffers).await.unwrap();
+
+                for recs in ip_buffers.iter_mut().take(records.read) {
+                    let ptr = recs.as_ptr() as *const IpRecord;
+                    let rec = unsafe { ptr.read_unaligned() };
+                    let ipv4 = Ipv4Addr::from(rec.src_ip.to_be_bytes());
+
+                    println!("src_ip: {:?}, dst_port: {}", ipv4, rec.dst_port);
+                }
+            }
+        });
+
+        task::spawn(async move {
+            let mut execve_buffers = (0..num_cpus)
+                .map(|_| BytesMut::with_capacity(1000))
+                .collect::<Vec<_>>();
+
+            loop {
+                let records = execve_buf.read_events(&mut execve_buffers).await.unwrap();
+
+                for recs in execve_buffers.iter_mut().take(records.read) {
+                    let ptr = recs.as_ptr() as *const ExecveCalls;
+                    let rec = unsafe { ptr.read_unaligned() };
+
+                    println!(
+                        "caller: {:?}, command: {:?}, args: {:?}",
+                        cstr_to_rstr!(rec.caller),
+                        cstr_to_rstr!(rec.command),
+                        get_args(&rec.args)
+                    );
+                }
+            }
+        });
+    }
 
     info!("Waiting for Ctrl-C...");
     signal::ctrl_c().await?;
