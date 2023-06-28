@@ -105,8 +105,8 @@ fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
 
     let ipv4hdr: *const Ipv4Hdr = unsafe { ptr_at(&ctx, EthHdr::LEN)? };
 
-    let source = u32::from_be(unsafe { (*ipv4hdr).src_addr });
-    let destination = u32::from_be(unsafe { (*ipv4hdr).dst_addr });
+    let source = unsafe { (*ipv4hdr).src_addr };
+    let destination = unsafe { (*ipv4hdr).dst_addr };
 
     let (source_port, dest_port) = match unsafe { (*ipv4hdr).proto } {
         IpProto::Tcp => {

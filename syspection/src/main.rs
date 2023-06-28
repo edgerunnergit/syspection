@@ -10,7 +10,6 @@ use std::ffi::CStr;
 use std::net::Ipv4Addr;
 
 use clap::Parser;
-use anyhow::Context;
 use bytes::BytesMut;
 use serde::Serialize;
 use log::{info, warn};
@@ -82,8 +81,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let ingress_ip: &mut Xdp = bpf.program_mut("ip_scanner").unwrap().try_into()?;
     ingress_ip.load()?;
-    ingress_ip.attach(&opt.iface, XdpFlags::default())
-        .context("failed to attach the XDP program with default flags - try changing XdpFlags::default() to XdpFlags::SKB_MODE")?;
+    ingress_ip.attach(&opt.iface, XdpFlags::SKB_MODE)?;
     let mut ip_records = AsyncPerfEventArray::try_from(bpf.take_map("IP_RECORDS").unwrap())?;
 
     info!("Spawning eBPF Event Processor...");
