@@ -9,12 +9,12 @@ use syspection_common::{ExecveCalls, IpRecord, ARG_COUNT, ARG_SIZE};
 use std::ffi::CStr;
 use std::net::Ipv4Addr;
 
+use clap::Parser;
 use anyhow::Context;
 use bytes::BytesMut;
-use clap::Parser;
-use log::{info, warn};
 use serde::Serialize;
-use tokio::{signal, task};
+use log::{info, warn};
+use tokio::{signal, task, sync::mpsc};
 
 #[derive(Debug, Parser)]
 struct Opt {
@@ -86,12 +86,35 @@ async fn main() -> Result<(), anyhow::Error> {
         .context("failed to attach the XDP program with default flags - try changing XdpFlags::default() to XdpFlags::SKB_MODE")?;
     let mut ip_records = AsyncPerfEventArray::try_from(bpf.take_map("IP_RECORDS").unwrap())?;
 
+    info!("Spawning eBPF Event Processor...");
+    let (execve_tx, mut execve_rx) = mpsc::channel::<Execve>(1000);
+    let (ip_tx, mut ip_rx) = mpsc::channel::<IngressIp>(1000);
+
+    task::spawn(async move {
+        loop {
+            tokio::select! {
+                Some(execve) = execve_rx.recv() => {
+                    println!("{:?}", execve);
+                }
+                Some(ip) = ip_rx.recv() => {
+                    println!("{:?}", ip);
+                }
+                else => {
+                    warn!("No more events to process!");
+                    break;
+                }
+            }
+        }
+    });
+
     info!("Spawning eBPF Event Listener...");
     let cpus = online_cpus()?;
     let num_cpus = cpus.len();
     for cpu in cpus {
         let mut ip_buf = ip_records.open(cpu, None)?;
         let mut execve_buf = execve_events.open(cpu, None)?;
+
+        let (ip_tx, execve_tx) = (ip_tx.clone(), execve_tx.clone());
 
         task::spawn(async move {
             let mut ip_buffers = (0..num_cpus)
@@ -100,6 +123,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
             loop {
                 let records = ip_buf.read_events(&mut ip_buffers).await.unwrap();
+                let mut res = Vec::new();
 
                 for recs in ip_buffers.iter_mut().take(records.read) {
                     let ptr = recs.as_ptr() as *const IpRecord;
@@ -111,7 +135,11 @@ async fn main() -> Result<(), anyhow::Error> {
                         dst_port: rec.dst_port,
                     };
 
-                    println!("{:?}", ip);
+                    res.push(ip);
+                }
+
+                for ip in res {
+                    ip_tx.send(ip).await.unwrap();
                 }
             }
         });
@@ -123,6 +151,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
             loop {
                 let records = execve_buf.read_events(&mut execve_buffers).await.unwrap();
+                let mut res = Vec::new();
 
                 for recs in execve_buffers.iter_mut().take(records.read) {
                     let ptr = recs.as_ptr() as *const ExecveCalls;
@@ -134,7 +163,11 @@ async fn main() -> Result<(), anyhow::Error> {
                         args: get_args(&rec.args),
                     };
 
-                    println!("{:?}", execve);
+                    res.push(execve);
+                }
+
+                for execve in res {
+                    execve_tx.send(execve).await.unwrap();
                 }
             }
         });
