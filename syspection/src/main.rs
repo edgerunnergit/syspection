@@ -8,17 +8,24 @@ use syspection_common::{ExecveCalls, IpRecord, ARG_COUNT, ARG_SIZE};
 
 use std::ffi::CStr;
 use std::net::Ipv4Addr;
+use std::collections::{HashMap, VecDeque};
+use std::time::SystemTime;
 
 use clap::Parser;
 use bytes::BytesMut;
 use serde::Serialize;
 use log::{info, warn};
-use tokio::{signal, task, sync::mpsc};
+use tokio::{signal, task, sync::mpsc, time};
 
 #[derive(Debug, Parser)]
 struct Opt {
     #[clap(short, long, default_value = "wlan0")]
     iface: String,
+}
+
+enum Events {
+    Execve(Execve),
+    IngressIp(IngressIp),
 }
 
 #[derive(Debug, Serialize)]
@@ -85,21 +92,48 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut ip_records = AsyncPerfEventArray::try_from(bpf.take_map("IP_RECORDS").unwrap())?;
 
     info!("Spawning eBPF Event Processor...");
+    let mut _interval = time::interval(time::Duration::from_secs(2));
     let (execve_tx, mut execve_rx) = mpsc::channel::<Execve>(1000);
     let (ip_tx, mut ip_rx) = mpsc::channel::<IngressIp>(1000);
+    let mut _ip_logs: HashMap<Ipv4Addr, SystemTime> = HashMap::new();
 
-    task::spawn(async move {
+    task::spawn(async move{
+
+        let mut ip_logs: VecDeque<Ipv4Addr> = VecDeque::with_capacity(5);
+
         loop {
-            tokio::select! {
+            let event: Events = tokio::select! {
                 Some(execve) = execve_rx.recv() => {
-                    println!("{:?}", execve);
+                    // println!("{:?}", execve);
+                    Events::Execve(execve)
                 }
                 Some(ip) = ip_rx.recv() => {
-                    println!("{:?}", ip);
+                    // println!("{:?}", ip);
+                    Events::IngressIp(ip)
                 }
                 else => {
                     warn!("No more events to process!");
                     break;
+                }
+            };
+
+            match event {
+                Events::Execve(execve) => {
+                    println!("{:?}", execve);
+                    if execve.exec.contains("sshd") {
+                        println!("{:?}", ip_logs);
+                    }
+                }
+                Events::IngressIp(ip) => {
+                    match ip.dst_port{
+                        22 => {
+                            println!("SSH: {:?}", ip);
+                            ip_logs.push_front(ip.src_ip);
+                        }
+                        _ => {
+                            println!("{:?}", ip);
+                        }
+                    }
                 }
             }
         }
