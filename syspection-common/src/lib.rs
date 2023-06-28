@@ -6,7 +6,7 @@ pub const ARG_SIZE: usize = 16;
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct IpRecord {
-    pub src_ip: u32,
+    pub src_ip: [u8; 4],
     pub dst_port: u16,
 }
 

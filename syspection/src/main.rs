@@ -86,6 +86,7 @@ async fn main() -> Result<(), anyhow::Error> {
         .context("failed to attach the XDP program with default flags - try changing XdpFlags::default() to XdpFlags::SKB_MODE")?;
     let mut ip_records = AsyncPerfEventArray::try_from(bpf.take_map("IP_RECORDS").unwrap())?;
 
+    info!("Spawning eBPF Event Listener...");
     let cpus = online_cpus()?;
     let num_cpus = cpus.len();
     for cpu in cpus {
@@ -103,9 +104,14 @@ async fn main() -> Result<(), anyhow::Error> {
                 for recs in ip_buffers.iter_mut().take(records.read) {
                     let ptr = recs.as_ptr() as *const IpRecord;
                     let rec = unsafe { ptr.read_unaligned() };
-                    let ipv4 = Ipv4Addr::from(rec.src_ip.to_be_bytes());
+                    let ipv4 = Ipv4Addr::from(rec.src_ip);
 
-                    println!("src_ip: {:?}, dst_port: {}", ipv4, rec.dst_port);
+                    let ip = IngressIp {
+                        src_ip: ipv4,
+                        dst_port: rec.dst_port,
+                    };
+
+                    println!("{:?}", ip);
                 }
             }
         });
@@ -122,12 +128,13 @@ async fn main() -> Result<(), anyhow::Error> {
                     let ptr = recs.as_ptr() as *const ExecveCalls;
                     let rec = unsafe { ptr.read_unaligned() };
 
-                    println!(
-                        "caller: {:?}, command: {:?}, args: {:?}",
-                        cstr_to_rstr!(rec.caller),
-                        cstr_to_rstr!(rec.command),
-                        get_args(&rec.args)
-                    );
+                    let execve = Execve {
+                        exec: cstr_to_rstr!(rec.caller),
+                        exec_comm: cstr_to_rstr!(rec.command),
+                        args: get_args(&rec.args),
+                    };
+
+                    println!("{:?}", execve);
                 }
             }
         });

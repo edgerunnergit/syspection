@@ -124,7 +124,7 @@ fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
     };
 
     let ip_record = IpRecord {
-        src_ip: source,
+        src_ip: source.to_le_bytes(),
         dst_port: dest_port,
     };
 
