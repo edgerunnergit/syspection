@@ -4,6 +4,7 @@ use aya::util::online_cpus;
 use aya::{include_bytes_aligned, Bpf};
 use aya_log::BpfLogger;
 
+use queues::IsQueue;
 use syspection_common::{ExecveCalls, IpRecord, ARG_COUNT, ARG_SIZE};
 
 use std::ffi::CStr;
@@ -99,7 +100,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     task::spawn(async move{
 
-        let mut ip_logs: VecDeque<Ipv4Addr> = VecDeque::with_capacity(5);
+        let mut ip_logs = queues::CircularBuffer::new(5);
 
         loop {
             let event: Events = tokio::select! {
@@ -128,7 +129,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     match ip.dst_port{
                         22 => {
                             println!("SSH: {:?}", ip);
-                            ip_logs.push_front(ip.src_ip);
+                            ip_logs.add(ip.src_ip).unwrap();
                         }
                         _ => {
                             println!("{:?}", ip);
