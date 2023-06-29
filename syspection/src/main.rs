@@ -4,19 +4,26 @@ use aya::util::online_cpus;
 use aya::{include_bytes_aligned, Bpf};
 use aya_log::BpfLogger;
 
-use queues::IsQueue;
 use syspection_common::{ExecveCalls, IpRecord, ARG_COUNT, ARG_SIZE};
 
+use std::collections::HashMap;
 use std::ffi::CStr;
+use std::fmt::Debug;
 use std::net::Ipv4Addr;
-use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::SystemTime;
 
-use clap::Parser;
 use bytes::BytesMut;
-use serde::Serialize;
+use clap::Parser;
 use log::{info, warn};
-use tokio::{signal, task, sync::mpsc, time};
+use serde::Serialize;
+use tokio::{
+    signal,
+    sync::{mpsc, Mutex},
+    task, time,
+};
+
+const BUFFER_TIME: u64 = 2;
 
 #[derive(Debug, Parser)]
 struct Opt {
@@ -36,10 +43,20 @@ struct Execve {
     args: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 struct IngressIp {
-    src_ip: Ipv4Addr,
     dst_port: u16,
+    src_ip: Ipv4Addr,
+    ts: SystemTime,
+}
+
+impl Debug for IngressIp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IngressIp")
+            .field("dst_port", &self.dst_port)
+            .field("src_ip", &self.src_ip)
+            .finish()
+    }
 }
 
 macro_rules! cstr_to_rstr {
@@ -93,15 +110,15 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut ip_records = AsyncPerfEventArray::try_from(bpf.take_map("IP_RECORDS").unwrap())?;
 
     info!("Spawning eBPF Event Processor...");
-    let mut _interval = time::interval(time::Duration::from_secs(2));
+    let mut interval = time::interval(time::Duration::from_secs(BUFFER_TIME));
+
     let (execve_tx, mut execve_rx) = mpsc::channel::<Execve>(1000);
     let (ip_tx, mut ip_rx) = mpsc::channel::<IngressIp>(1000);
-    let mut _ip_logs: HashMap<Ipv4Addr, SystemTime> = HashMap::new();
 
-    task::spawn(async move{
+    let ip_logs: Arc<Mutex<HashMap<Ipv4Addr, SystemTime>>> = Arc::new(Mutex::new(HashMap::new()));
+    let ip_logs_clone = Arc::clone(&ip_logs);
 
-        let mut ip_logs = queues::CircularBuffer::new(5);
-
+    task::spawn(async move {
         loop {
             let event: Events = tokio::select! {
                 Some(execve) = execve_rx.recv() => {
@@ -125,18 +142,35 @@ async fn main() -> Result<(), anyhow::Error> {
                         println!("{:?}", ip_logs);
                     }
                 }
-                Events::IngressIp(ip) => {
-                    match ip.dst_port{
-                        22 => {
-                            println!("SSH: {:?}", ip);
-                            ip_logs.add(ip.src_ip).unwrap();
-                        }
-                        _ => {
-                            println!("{:?}", ip);
-                        }
+                Events::IngressIp(ip) => match ip.dst_port {
+                    22 => {
+                        println!("SSH: {:?}", ip);
+                        let mut ip_lock = ip_logs.lock().await;
+                        ip_lock.insert(ip.src_ip, ip.ts);
                     }
+                    _ => {
+                        println!("{:?}", ip);
+                    }
+                },
+            }
+        }
+    });
+
+    task::spawn(async move {
+        loop {
+            interval.tick().await;
+            let mut ip_lock = ip_logs_clone.lock().await;
+            let now = SystemTime::now();
+            let mut to_remove = Vec::new();
+            for (ip, time) in ip_lock.iter() {
+                if now.duration_since(*time).unwrap().as_secs() > BUFFER_TIME {
+                    to_remove.push(*ip);
                 }
             }
+            for ip in to_remove {
+                ip_lock.remove(&ip);
+            }
+            println!("{:?}", ip_lock);
         }
     });
 
@@ -164,6 +198,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     let ipv4 = Ipv4Addr::from(rec.src_ip);
 
                     let ip = IngressIp {
+                        ts: SystemTime::now(),
                         src_ip: ipv4,
                         dst_port: rec.dst_port,
                     };

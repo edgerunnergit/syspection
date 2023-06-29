@@ -15,7 +15,6 @@ tokio = { version = "1.25", features = ["macros", "rt", "rt-multi-thread", "net"
 clap = "4.3.8"
 serde = { version = "1.0.164", features = ["serde_derive"] }
 bytes = "1.4.0"
-queues = "1.1.0"
 
 [[bin]]
 name = "syspection"
