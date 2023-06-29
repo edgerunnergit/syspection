@@ -110,11 +110,11 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut ip_records = AsyncPerfEventArray::try_from(bpf.take_map("IP_RECORDS").unwrap())?;
 
     info!("Spawning eBPF Event Processor...");
-    let mut sshd_detected: bool = false;
     let mut interval = time::interval(time::Duration::from_secs(BUFFER_TIME));
 
     let (execve_tx, mut execve_rx) = mpsc::channel::<Execve>(1000);
     let (ip_tx, mut ip_rx) = mpsc::channel::<IngressIp>(1000);
+    let (sshd_tx, mut sshd_rx) = mpsc::channel::<bool>(1000);
 
     let ip_logs: Arc<Mutex<HashMap<Ipv4Addr, SystemTime>>> = Arc::new(Mutex::new(HashMap::new()));
     let ip_logs_clone = Arc::clone(&ip_logs);
@@ -137,12 +137,6 @@ async fn main() -> Result<(), anyhow::Error> {
             };
 
             match event {
-                Events::Execve(execve) => {
-                    println!("{:?}", execve);
-                    if execve.exec.contains("sshd") {
-                        sshd_detected = true;
-                    }
-                }
                 Events::IngressIp(ip) => match ip.dst_port {
                     22 => {
                         println!("SSH: {:?}", ip);
@@ -153,6 +147,12 @@ async fn main() -> Result<(), anyhow::Error> {
                         println!("{:?}", ip);
                     }
                 },
+                Events::Execve(execve) => {
+                    println!("{:?}", execve);
+                    if execve.exec.contains("sshd") {
+                        sshd_tx.send(true).await.unwrap();
+                    }
+                }
             }
         }
     });
@@ -160,8 +160,8 @@ async fn main() -> Result<(), anyhow::Error> {
     task::spawn(async move {
         loop {
             interval.tick().await;
-            match sshd_detected {
-                true => {
+            match sshd_rx.recv().await {
+                Some(true) => {
                     let mut ip_lock = ip_logs_clone.lock().await;
                     let now = SystemTime::now();
                     let mut to_remove = Vec::new();
@@ -174,9 +174,10 @@ async fn main() -> Result<(), anyhow::Error> {
                         ip_lock.remove(&ip);
                     }
                     println!("Hashmap: {:?}", ip_lock);
-                    sshd_detected = false;
                 }
-                false => {}
+                _ => {
+                    println!("No SSHD event!")
+                }
             }
         }
     });
