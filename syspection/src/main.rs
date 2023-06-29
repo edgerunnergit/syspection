@@ -110,6 +110,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut ip_records = AsyncPerfEventArray::try_from(bpf.take_map("IP_RECORDS").unwrap())?;
 
     info!("Spawning eBPF Event Processor...");
+    let mut sshd_detected: bool = false;
     let mut interval = time::interval(time::Duration::from_secs(BUFFER_TIME));
 
     let (execve_tx, mut execve_rx) = mpsc::channel::<Execve>(1000);
@@ -139,7 +140,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 Events::Execve(execve) => {
                     println!("{:?}", execve);
                     if execve.exec.contains("sshd") {
-                        println!("{:?}", ip_logs);
+                        sshd_detected = true;
                     }
                 }
                 Events::IngressIp(ip) => match ip.dst_port {
@@ -159,18 +160,24 @@ async fn main() -> Result<(), anyhow::Error> {
     task::spawn(async move {
         loop {
             interval.tick().await;
-            let mut ip_lock = ip_logs_clone.lock().await;
-            let now = SystemTime::now();
-            let mut to_remove = Vec::new();
-            for (ip, time) in ip_lock.iter() {
-                if now.duration_since(*time).unwrap().as_secs() > BUFFER_TIME {
-                    to_remove.push(*ip);
+            match sshd_detected {
+                true => {
+                    let mut ip_lock = ip_logs_clone.lock().await;
+                    let now = SystemTime::now();
+                    let mut to_remove = Vec::new();
+                    for (ip, time) in ip_lock.iter() {
+                        if now.duration_since(*time).unwrap().as_secs() > BUFFER_TIME {
+                            to_remove.push(*ip);
+                        }
+                    }
+                    for ip in to_remove {
+                        ip_lock.remove(&ip);
+                    }
+                    println!("Hashmap: {:?}", ip_lock);
+                    sshd_detected = false;
                 }
+                false => {}
             }
-            for ip in to_remove {
-                ip_lock.remove(&ip);
-            }
-            println!("{:?}", ip_lock);
         }
     });
 
