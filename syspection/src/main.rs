@@ -20,7 +20,7 @@ use serde::Serialize;
 use tokio::{
     signal,
     sync::{mpsc, Mutex},
-    task, time,
+    task,
 };
 
 const BUFFER_TIME: u64 = 2;
@@ -110,11 +110,9 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut ip_records = AsyncPerfEventArray::try_from(bpf.take_map("IP_RECORDS").unwrap())?;
 
     info!("Spawning eBPF Event Processor...");
-    let mut interval = time::interval(time::Duration::from_secs(BUFFER_TIME));
-
     let (execve_tx, mut execve_rx) = mpsc::channel::<Execve>(1000);
     let (ip_tx, mut ip_rx) = mpsc::channel::<IngressIp>(1000);
-    let (sshd_tx, mut sshd_rx) = mpsc::channel::<bool>(1000);
+    let (sshd_tx, mut sshd_rx) = mpsc::channel::<bool>(1);
 
     let ip_logs: Arc<Mutex<HashMap<Ipv4Addr, SystemTime>>> = Arc::new(Mutex::new(HashMap::new()));
     let ip_logs_clone = Arc::clone(&ip_logs);
@@ -159,9 +157,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     task::spawn(async move {
         loop {
-            interval.tick().await;
-            match sshd_rx.recv().await {
-                Some(true) => {
+            if let Some(true) = sshd_rx.recv().await {
                     let mut ip_lock = ip_logs_clone.lock().await;
                     let now = SystemTime::now();
                     let mut to_remove = Vec::new();
@@ -175,11 +171,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                     println!("Hashmap: {:?}", ip_lock);
                 }
-                _ => {
-                    println!("No SSHD event!")
-                }
             }
-        }
     });
 
     info!("Spawning eBPF Event Listener...");
