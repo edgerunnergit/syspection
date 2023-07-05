@@ -4,6 +4,7 @@ use aya::util::online_cpus;
 use aya::{include_bytes_aligned, Bpf};
 use aya_log::BpfLogger;
 
+use crate::model::{send_logs, get_auth};
 use syspection_common::{ExecveCalls, IpRecord, ARG_COUNT, ARG_SIZE};
 
 use std::collections::HashMap;
@@ -11,7 +12,7 @@ use std::ffi::CStr;
 use std::fmt::Debug;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::BytesMut;
 use clap::Parser;
@@ -22,6 +23,8 @@ use tokio::{
     sync::{mpsc, Mutex},
     task,
 };
+
+pub mod model;
 
 const BUFFER_TIME: u64 = 2;
 
@@ -90,7 +93,6 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // get the timestamp of when the program starts running
     let start_time = SystemTime::now();
-
     env_logger::init();
 
     #[cfg(debug_assertions)]
@@ -124,6 +126,9 @@ async fn main() -> Result<(), anyhow::Error> {
     let ip_logs: Arc<Mutex<HashMap<Ipv4Addr, SystemTime>>> = Arc::new(Mutex::new(HashMap::new()));
     let ip_logs_clone = Arc::clone(&ip_logs);
     let frequently_seen: Arc<Mutex<HashMap<Ipv4Addr, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    let (auth, mut auth_gen_ts) = get_auth(std::env::var("SUBCOM_TOKEN").unwrap()).await.unwrap();
+    let mut auth_clone = Arc::clone(&auth);
 
     task::spawn(async move {
         loop {
@@ -168,22 +173,43 @@ async fn main() -> Result<(), anyhow::Error> {
             if let Some(true) = sshd_rx.recv().await {
                 if let Some(duration) = opt.duration {
                     let now = SystemTime::now();
+                    let mut ip_lock = ip_logs_clone.lock().await;
+                    let mut to_remove = Vec::new();
+                    for (ip, time) in ip_lock.iter() {
+                        if now.duration_since(*time).unwrap().as_secs() > BUFFER_TIME {
+                            to_remove.push(*ip);
+                        }
+                    }
+                    for ip in to_remove {
+                        ip_lock.remove(&ip);
+                    }
+                    println!("Hashmap: {:?}", ip_lock);
 
                     if now.duration_since(start_time).unwrap().as_secs() > duration {
-                        println!("Duration expired!");
+                        let mut values: Vec<[String; 2]> = Vec::new();
+                        for (ip, ts) in ip_lock.iter() {
+                            let value = [
+                                ts.duration_since(UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_nanos()
+                                    .to_string(),
+                                ip.to_string(),
+                            ];
+                            values.push(value);
+                        }
+                        // if auth_gen_ts is more than 25 minutes old, get a new auth token and reset auth_gen_ts
+                        if auth_gen_ts.duration_since(UNIX_EPOCH).unwrap().as_secs() > 1500 {
+                            let (new_auth, new_auth_gen_ts) =
+                                get_auth(std::env::var("SUBCOM_TOKEN").unwrap())
+                                    .await
+                                    .unwrap();
+                            auth_clone = new_auth;
+                            auth_gen_ts = new_auth_gen_ts;
+                        }
+                        send_logs(auth_clone.as_ref(), values)
+                            .await
+                            .unwrap();
                     } else {
-                        let mut ip_lock = ip_logs_clone.lock().await;
-                        let mut to_remove = Vec::new();
-                        for (ip, time) in ip_lock.iter() {
-                            if now.duration_since(*time).unwrap().as_secs() > BUFFER_TIME {
-                                to_remove.push(*ip);
-                            }
-                        }
-                        for ip in to_remove {
-                            ip_lock.remove(&ip);
-                        }
-                        println!("Hashmap: {:?}", ip_lock);
-
                         let mut frequently_seen_lock = frequently_seen.lock().await;
                         for (ip, _) in ip_lock.iter() {
                             if frequently_seen_lock.contains_key(ip) {
