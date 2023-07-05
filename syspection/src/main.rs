@@ -29,6 +29,10 @@ const BUFFER_TIME: u64 = 2;
 struct Opt {
     #[clap(short, long, default_value = "wlan0")]
     iface: String,
+
+    // Take the duration for whitelisting IP addresses
+    #[clap(short, long)]
+    duration: Option<u64>,
 }
 
 enum Events {
@@ -84,6 +88,9 @@ fn get_args(args: &[[u8; ARG_SIZE]; ARG_COUNT]) -> Vec<String> {
 async fn main() -> Result<(), anyhow::Error> {
     let opt = Opt::parse();
 
+    // get the timestamp of when the program starts running
+    let start_time = SystemTime::now();
+
     env_logger::init();
 
     #[cfg(debug_assertions)]
@@ -116,6 +123,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let ip_logs: Arc<Mutex<HashMap<Ipv4Addr, SystemTime>>> = Arc::new(Mutex::new(HashMap::new()));
     let ip_logs_clone = Arc::clone(&ip_logs);
+    let frequently_seen: Arc<Mutex<HashMap<Ipv4Addr, u64>>> = Arc::new(Mutex::new(HashMap::new()));
 
     task::spawn(async move {
         loop {
@@ -158,20 +166,36 @@ async fn main() -> Result<(), anyhow::Error> {
     task::spawn(async move {
         loop {
             if let Some(true) = sshd_rx.recv().await {
-                    let mut ip_lock = ip_logs_clone.lock().await;
+                if let Some(duration) = opt.duration {
                     let now = SystemTime::now();
-                    let mut to_remove = Vec::new();
-                    for (ip, time) in ip_lock.iter() {
-                        if now.duration_since(*time).unwrap().as_secs() > BUFFER_TIME {
-                            to_remove.push(*ip);
+
+                    if now.duration_since(start_time).unwrap().as_secs() > duration {
+                        println!("Duration expired!");
+                    } else {
+                        let mut ip_lock = ip_logs_clone.lock().await;
+                        let mut to_remove = Vec::new();
+                        for (ip, time) in ip_lock.iter() {
+                            if now.duration_since(*time).unwrap().as_secs() > BUFFER_TIME {
+                                to_remove.push(*ip);
+                            }
+                        }
+                        for ip in to_remove {
+                            ip_lock.remove(&ip);
+                        }
+                        println!("Hashmap: {:?}", ip_lock);
+
+                        let mut frequently_seen_lock = frequently_seen.lock().await;
+                        for (ip, _) in ip_lock.iter() {
+                            if frequently_seen_lock.contains_key(ip) {
+                                *frequently_seen_lock.get_mut(ip).unwrap() += 1;
+                            } else {
+                                frequently_seen_lock.insert(*ip, 1);
+                            }
                         }
                     }
-                    for ip in to_remove {
-                        ip_lock.remove(&ip);
-                    }
-                    println!("Hashmap: {:?}", ip_lock);
                 }
             }
+        }
     });
 
     info!("Spawning eBPF Event Listener...");
