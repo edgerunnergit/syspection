@@ -20,6 +20,7 @@ pub struct Data {
     streams: Vec<StreamData>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Response {
     status: String,
@@ -27,6 +28,7 @@ struct Response {
     data: Data2,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct Data2 {
     token: String,
@@ -35,6 +37,7 @@ struct Data2 {
 }
 
 pub async fn send_logs(api: &String, values: Vec<[String; 2]>) -> Result<(), reqwest::Error> {
+    println!("Sending logs to the server");
     let barer = format!("Bearer {}", api);
     let mut headers = reqwest::header::HeaderMap::new();
 
@@ -42,8 +45,8 @@ pub async fn send_logs(api: &String, values: Vec<[String; 2]>) -> Result<(), req
     headers.insert("Authorization", barer.parse().unwrap());
 
     let stream = Stream {
-        uuid: String::from("v0-ssh-ips-uuid"),
-        label: String::from("v0-ssh-ips-label"),
+        uuid: String::from("v1-ssh-ips-uuid"),
+        label: String::from("v1-ssh-ips-label"),
     };
 
     let stream_data = StreamData { stream, values };

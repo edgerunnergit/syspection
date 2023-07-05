@@ -1,6 +1,6 @@
 #![no_std]
 
-pub const ARG_COUNT: usize = 8;
+pub const ARG_COUNT: usize = 6;
 pub const ARG_SIZE: usize = 16;
 
 #[repr(C)]
