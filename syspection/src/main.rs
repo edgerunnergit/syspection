@@ -4,7 +4,7 @@ use aya::util::online_cpus;
 use aya::{include_bytes_aligned, Bpf};
 use aya_log::BpfLogger;
 
-use crate::model::{send_logs, get_auth};
+use crate::helpers::{send_logs, get_auth};
 use syspection_common::{ExecveCalls, IpRecord, ARG_COUNT, ARG_SIZE};
 
 use std::collections::HashMap;
@@ -25,6 +25,7 @@ use tokio::{
 };
 
 pub mod model;
+pub mod helpers;
 
 const BUFFER_TIME: u64 = 2;
 
